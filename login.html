@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Check-in · Segue-Me</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;900&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, doc, getDoc, setDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+      from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+    // =====================================================
+    // 🔥 CONFIGURAÇÃO FIREBASE — substitua pelos seus dados
+    // =====================================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyABzvuxVmc-wJBwDEbQptdCPwYH6LwDcko",
+    authDomain: "segueme-checkin.firebaseapp.com",
+    projectId: "segueme-checkin",
+    storageBucket: "segueme-checkin.firebasestorage.app",
+    messagingSenderId: "639292058219",
+    appId: "1:639292058219:web:dcdc5334ccd90554b71f2e"
+    };
+    // =====================================================
+
+    const app  = initializeApp(firebaseConfig);
+    const db   = getFirestore(app);
+    const auth = getAuth(app);
+
+    // ── Helpers ─────────────────────────────────────────
+    function getDeviceId() {
+      let id = localStorage.getItem("sm_device_id");
+      if (!id) {
+        id = crypto.randomUUID ? crypto.randomUUID()
+           : Math.random().toString(36).slice(2) + Date.now();
+        localStorage.setItem("sm_device_id", id);
+      }
+      return id;
+    }
+
+    // ── Estado ──────────────────────────────────────────
+    let activeEventId   = null;
+    let activeEventName = null;
+    let currentUser     = null;
+
+    // ── Carregar evento ativo ────────────────────────────
+    async function loadActiveEvent() {
+      const ref  = doc(db, "config", "activeEvent");
+      const snap = await getDoc(ref);
+      if (snap.exists() && snap.data().eventId) {
+        activeEventId   = snap.data().eventId;
+        activeEventName = snap.data().eventName || "Evento";
+        return true;
+      }
+      return false;
+    }
+
+    // ── Verificar checkin ────────────────────────────────
+    async function hasCheckedIn(eventId, deviceId) {
+      const ref  = doc(db, "checkins", eventId, "devices", deviceId);
+      const snap = await getDoc(ref);
+      return snap.exists();
+    }
+
+    // ── Fazer checkin ────────────────────────────────────
+    async function doCheckin(name, encontro) {
+      const deviceId = getDeviceId();
+      if (!activeEventId) return { ok: false, msg: "Nenhum evento ativo no momento." };
+
+      const already = await hasCheckedIn(activeEventId, deviceId);
+      if (already) return { ok: false, msg: "Você já fez check-in neste evento! ✅" };
+
+      // Salvar na sub-coleção devices (controle por dispositivo)
+      await setDoc(doc(db, "checkins", activeEventId, "devices", deviceId), {
+        name, encontro, deviceId, ts: serverTimestamp()
+      });
+      // Salvar também na lista geral de presentes
+      await addDoc(collection(db, "checkins", activeEventId, "lista"), {
+        name, encontro, deviceId, ts: serverTimestamp()
+      });
+      return { ok: true };
+    }
+
+    // ── Auth ─────────────────────────────────────────────
+    async function login(email, password) {
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, msg: "E-mail ou senha incorretos." };
+      }
+    }
+
+    async function logout() {
+      await signOut(auth);
+    }
+
+    // ── Eventos (moderador) ──────────────────────────────
+    async function createEvent(name) {
+      const ref  = await addDoc(collection(db, "events"), { name, createdAt: serverTimestamp(), active: false });
+      return ref.id;
+    }
+
+    async function setActiveEvent(eventId, eventName) {
+      await setDoc(doc(db, "config", "activeEvent"), { eventId, eventName });
+    }
+
+    async function clearActiveEvent() {
+      await setDoc(doc(db, "config", "activeEvent"), { eventId: null, eventName: null });
+    }
+
+    // ── Lista de presentes (tempo real) ─────────────────
+    function listenCheckins(eventId, callback) {
+      const q = query(collection(db, "checkins", eventId, "lista"), orderBy("ts", "desc"));
+      return onSnapshot(q, snap => {
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        callback(list);
+      });
+    }
+
+    // ── Expor para o HTML ────────────────────────────────
+    window.SM = { loadActiveEvent, doCheckin, login, logout, createEvent,
+                  setActiveEvent, clearActiveEvent, listenCheckins,
+                  getActiveEvent: () => ({ id: activeEventId, name: activeEventName }) };
+
+    onAuthStateChanged(auth, user => {
+      currentUser = user;
+      window.dispatchEvent(new CustomEvent("sm-auth", { detail: { user } }));
+    });
+
+    // Iniciar carregamento do evento
+    loadActiveEvent().then(() => {
+      window.dispatchEvent(new CustomEvent("sm-ready"));
+    });
+  </script>
+
+  <style>
+    :root {
+      --gold:    #E8A020;
+      --gold2:   #F5C842;
+      --sky:     #5AAEDF;
+      --sky2:    #89CCEF;
+      --white:   #FFFFFF;
+      --ink:     #1A1A2E;
+      --soft:    #F0F7FF;
+      --success: #27AE60;
+      --danger:  #E74C3C;
+      --radius:  18px;
+      --shadow:  0 8px 32px rgba(0,0,0,.14);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Nunito', sans-serif;
+      background: linear-gradient(160deg, #cde9f9 0%, #eef6ff 55%, #fdf4e3 100%);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      background: linear-gradient(135deg, var(--sky) 0%, #3a8fc7 100%);
+      padding: 18px 20px 14px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: 0 4px 20px rgba(0,0,0,.18);
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo-wrap {
+      width: 52px; height: 52px; flex-shrink: 0;
+      background: var(--white);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+      overflow: hidden;
+    }
+    .logo-wrap img { width: 46px; height: 46px; object-fit: cover; border-radius: 50%; }
+    .logo-text h1 { font-family: 'Montserrat', sans-serif; font-weight: 900; font-size: 1.25rem; color: var(--white); line-height: 1.1; letter-spacing: .5px; }
+    .logo-text p  { font-size: .72rem; color: rgba(255,255,255,.85); font-weight: 600; margin-top: 2px; }
+
+    /* ── Main wrapper ── */
+    main {
+      width: 100%;
+      max-width: 480px;
+      padding: 22px 16px 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px 20px;
+      animation: fadeUp .5s ease both;
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(22px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Evento badge ── */
+    .event-badge {
+      display: flex; align-items: center; gap: 10px;
+      background: linear-gradient(120deg, var(--gold) 0%, var(--gold2) 100%);
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: var(--ink);
+      font-weight: 700;
+      font-size: .92rem;
+      box-shadow: 0 4px 14px rgba(232,160,32,.35);
+    }
+    .event-badge .dot { width: 10px; height: 10px; background: var(--success); border-radius: 50%; box-shadow: 0 0 0 3px rgba(39,174,96,.25); flex-shrink:0; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 0 3px rgba(39,174,96,.25)} 50%{box-shadow:0 0 0 6px rgba(39,174,96,.1)} }
+    .event-badge .no-event { color: #888; font-weight: 600; font-style: italic; }
+
+    /* ── Formulário ── */
+    .form-title { font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 1.25rem; color: var(--ink); margin-bottom: 4px; }
+    .form-sub   { font-size: .82rem; color: #666; margin-bottom: 22px; }
+
+    label { display: block; font-weight: 700; font-size: .85rem; color: #444; margin-bottom: 6px; margin-top: 14px; }
+    label:first-of-type { margin-top: 0; }
+
+    input[type="text"], input[type="email"], input[type="password"], select {
+      width: 100%;
+      padding: 13px 16px;
+      border: 2px solid #E0EAF5;
+      border-radius: 12px;
+      font-family: 'Nunito', sans-serif;
+      font-size: 1rem;
+      color: var(--ink);
+      background: var(--soft);
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      -webkit-appearance: none;
+    }
+    input:focus, select:focus { border-color: var(--sky); box-shadow: 0 0 0 4px rgba(90,174,223,.15); }
+    select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%235AAEDF'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 16px center; padding-right: 40px; }
+
+    /* ── Opções de encontro (pills) ── */
+    .pill-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .pill {
+      flex: 1 1 auto;
+      min-width: calc(33% - 8px);
+      padding: 10px 8px;
+      border: 2px solid #D8E8F5;
+      border-radius: 10px;
+      background: var(--soft);
+      font-family: 'Montserrat', sans-serif;
+      font-weight: 700;
+      font-size: .88rem;
+      color: #555;
+      cursor: pointer;
+      text-align: center;
+      transition: all .2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .pill:hover  { border-color: var(--sky); color: var(--sky); }
+    .pill.active { border-color: var(--sky); background: var(--sky); color: var(--white); box-shadow: 0 4px 12px rgba(90,174,223,.35); }
+    .pill-label  { font-size: .68rem; font-weight: 600; display: block; opacity: .8; margin-top: 2px; font-family:'Nunito',sans-serif; }
+
+    /* ── Botão principal ── */
+    .btn-primary {
+      width: 100%;
+      margin-top: 22px;
+      padding: 15px;
+      border: none;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--sky) 0%, #3a8fc7 100%);
+      color: var(--white);
+      font-family: 'Montserrat', sans-serif;
+      font-weight: 800;
+      font-size: 1.05rem;
+      letter-spacing: .5px;
+      cursor: pointer;
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+      box-shadow: 0 6px 20px rgba(90,174,223,.45);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn-primary:active  { transform: scale(.97); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-secondary {
+      width: 100%;
+      margin-top: 10px;
+      padding: 12px;
+      border: 2px solid #D0E4F0;
+      border-radius: 12px;
+      background: transparent;
+      color: #555;
+      font-family: 'Nunito', sans-serif;
+      font-weight: 700;
+      font-size: .92rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-secondary:hover { background: #F0F7FF; }
+
+    /* ── Mensagens de status ── */
+    .msg {
+      padding: 14px 16px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: .9rem;
+      text-align: center;
+      animation: fadeUp .3s ease both;
+      display: none;
+    }
+    .msg.show { display: block; }
+    .msg.success { background: #EAFAF1; color: #1E8449; border: 2px solid #A9DFBF; }
+    .msg.error   { background: #FDEDEC; color: #922B21; border: 2px solid #F1948A; }
+
+    /* ── Sucesso screen ── */
+    .success-screen {
+      text-align: center;
+      padding: 10px 0 4px;
+      display: none;
+    }
+    .success-screen.show { display: block; }
+    .check-icon { font-size: 4rem; animation: pop .5s cubic-bezier(.36,.07,.19,.97) both; }
+    @keyframes pop { 0%{transform:scale(0)} 80%{transform:scale(1.15)} 100%{transform:scale(1)} }
+    .success-screen h2 { font-family:'Montserrat',sans-serif; font-weight:900; font-size:1.4rem; color:var(--success); margin: 10px 0 6px; }
+    .success-screen p  { color:#555; font-size:.9rem; }
+    .success-screen .name-tag { display:inline-block; background:var(--soft); border:2px solid var(--sky2); border-radius:10px; padding:8px 18px; font-weight:800; font-size:1rem; color:var(--ink); margin:12px 0 4px; }
+
+    /* ── Área moderador ── */
+    .mod-toggle { text-align: center; }
+    .mod-toggle button { background:none; border:none; color:#aaa; font-size:.78rem; cursor:pointer; text-decoration: underline; font-family:'Nunito',sans-serif; }
+
+    .mod-section { display: none; }
+    .mod-section.show { display: block; }
+
+    .section-title { font-family:'Montserrat',sans-serif; font-weight:800; font-size:1rem; color:var(--ink); display:flex; align-items:center; gap:8px; margin-bottom:16px; }
+    .badge { background:var(--sky); color:#fff; border-radius:20px; padding:2px 10px; font-size:.72rem; font-weight:700; }
+
+    .event-list { list-style:none; display:flex; flex-direction:column; gap:8px; }
+    .event-item {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:12px 14px;
+      border-radius:10px;
+      background:var(--soft);
+      border:2px solid #E0EAF5;
+      font-weight:700; font-size:.9rem;
+    }
+    .event-item.active-ev { border-color:var(--gold); background:#FFF8EA; }
+    .btn-sm {
+      padding:6px 14px; border:none; border-radius:8px;
+      font-family:'Nunito',sans-serif; font-weight:700; font-size:.78rem;
+      cursor:pointer; transition:opacity .15s;
+    }
+    .btn-sm:active { opacity:.7; }
+    .btn-sm.activate { background:var(--sky); color:#fff; }
+    .btn-sm.deactivate { background:#f0f0f0; color:#666; }
+
+    .checkin-list { list-style:none; display:flex; flex-direction:column; gap:6px; max-height:300px; overflow-y:auto; }
+    .checkin-item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; background:var(--soft); border-left:3px solid var(--sky); font-size:.85rem; }
+    .checkin-item .ci-name { font-weight:700; color:var(--ink); flex:1; }
+    .checkin-item .ci-enc  { background:var(--gold); color:#fff; border-radius:6px; padding:2px 8px; font-size:.72rem; font-weight:800; }
+    .count-badge { font-family:'Montserrat',sans-serif; font-weight:900; font-size:1.8rem; color:var(--sky); }
+
+    /* ── Input criar evento ── */
+    .create-row { display:flex; gap:8px; margin-top:12px; }
+    .create-row input { flex:1; }
+    .create-row button { flex-shrink:0; padding:13px 18px; border:none; border-radius:12px; background:var(--gold); color:#fff; font-weight:800; font-size:.88rem; cursor:pointer; font-family:'Montserrat',sans-serif; }
+
+    /* ── Loading spinner ── */
+    .spinner { display:inline-block; width:18px; height:18px; border:3px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:8px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    footer { padding:24px 16px; text-align:center; font-size:.72rem; color:#aaa; }
+
+    /* ── Responsivo ── */
+    @media (max-width:360px) {
+      .pill { min-width: calc(50% - 8px); font-size:.8rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-wrap">
+    <!-- Substitua o src pela URL do logo se quiser hospedar externamente -->
+    <img src="logo.png" alt="Segue-Me" onerror="this.style.display='none';this.parentElement.innerHTML='✝️'" />
+  </div>
+  <div class="logo-text">
+    <h1>SEGUE-ME</h1>
+    <p>Santuário N. Sra. de Fátima · Palmas</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- Badge do evento ativo -->
+  <div class="event-badge" id="eventBadge">
+    <div class="dot"></div>
+    <span id="eventLabel"><span class="no-event">Carregando evento…</span></span>
+  </div>
+
+  <!-- Card checkin -->
+  <div class="card" id="checkinCard">
+    <p class="form-title">📋 Check-in</p>
+    <p class="form-sub">Confirme sua presença no encontro de hoje!</p>
+
+    <!-- Sucesso -->
+    <div class="success-screen" id="successScreen">
+      <div class="check-icon">✅</div>
+      <h2>Presença confirmada!</h2>
+      <p>Seja bem-vindo(a), </p>
+      <div class="name-tag" id="successName">—</div>
+      <p style="margin-top:8px;font-size:.82rem;color:#888;">Que Deus abençoe este encontro! 🙏</p>
+    </div>
+
+    <!-- Formulário -->
+    <div id="checkinForm">
+      <label for="inputName">Nome completo *</label>
+      <input type="text" id="inputName" placeholder="Ex: Maria Aparecida Silva" autocomplete="name" />
+
+      <label>Ano do seu Encontro *</label>
+      <div class="pill-group" id="pillGroup">
+        <button class="pill" data-val="Dino (pré-pandemia)">
+          🦕 DINO
+          <span class="pill-label">antes da pandemia</span>
+        </button>
+        <button class="pill" data-val="2022">📅 2022</button>
+        <button class="pill" data-val="2023">📅 2023</button>
+        <button class="pill" data-val="2024">📅 2024</button>
+        <button class="pill" data-val="2025">📅 2025</button>
+      </div>
+
+      <div class="msg" id="formMsg"></div>
+
+      <button class="btn-primary" id="btnCheckin" disabled>
+        Confirmar Presença ✔
+      </button>
+    </div>
+  </div>
+
+  <!-- Toggle moderador -->
+  <div class="mod-toggle">
+    <button onclick="toggleMod()">Área do moderador 🔐</button>
+  </div>
+
+  <!-- Seção moderador (login) -->
+  <div class="card mod-section" id="modLoginCard">
+    <p class="section-title">🔐 Acesso do Moderador</p>
+    <label for="modEmail">E-mail</label>
+    <input type="email" id="modEmail" placeholder="moderador@segue-me.com" />
+    <label for="modPass">Senha</label>
+    <input type="password" id="modPass" placeholder="••••••••" />
+    <div class="msg" id="loginMsg"></div>
+    <button class="btn-primary" id="btnLogin" onclick="doLogin()">Entrar</button>
+  </div>
+
+  <!-- Seção moderador (painel) -->
+  <div class="mod-section" id="modPanel">
+
+    <!-- Criar evento -->
+    <div class="card">
+      <p class="section-title">➕ Criar novo evento</p>
+      <div class="create-row">
+        <input type="text" id="newEventName" placeholder="Ex: Encontro de Abril 2025" />
+        <button onclick="handleCreateEvent()">Criar</button>
+      </div>
+      <div class="msg" id="createMsg"></div>
+    </div>
+
+    <!-- Lista de eventos -->
+    <div class="card">
+      <p class="section-title">📅 Eventos <span class="badge" id="evCount">0</span></p>
+      <ul class="event-list" id="eventList">
+        <li style="color:#aaa;font-size:.85rem;text-align:center;padding:10px 0">Carregando…</li>
+      </ul>
+      <button class="btn-secondary" style="margin-top:12px" onclick="handleClearEvent()">⛔ Desativar evento ativo</button>
+    </div>
+
+    <!-- Lista de presentes -->
+    <div class="card">
+      <p class="section-title">
+        👥 Presentes — <span class="count-badge" id="presentCount">0</span>
+      </p>
+      <p style="font-size:.8rem;color:#888;margin-bottom:10px" id="presentEventLabel">Nenhum evento selecionado</p>
+      <ul class="checkin-list" id="checkinList">
+        <li style="color:#aaa;font-size:.85rem;text-align:center;padding:10px 0">—</li>
+      </ul>
+    </div>
+
+    <button class="btn-secondary" onclick="doLogout()">Sair da conta</button>
+  </div>
+
+</main>
+
+<footer>Segue-Me · Santuário Nossa Senhora de Fátima · Arquidiocese de Palmas</footer>
+
+<script>
+  // ── Estado local ────────────────────────────────────
+  let selectedEncontro = null;
+  let unsubCheckins    = null;
+  let eventsCache      = [];
+
+  // ── Pills ────────────────────────────────────────────
+  document.querySelectorAll('.pill').forEach(p => {
+    p.addEventListener('click', () => {
+      document.querySelectorAll('.pill').forEach(x => x.classList.remove('active'));
+      p.classList.add('active');
+      selectedEncontro = p.dataset.val;
+      validate();
+    });
+  });
+
+  document.getElementById('inputName').addEventListener('input', validate);
+
+  function validate() {
+    const name = document.getElementById('inputName').value.trim();
+    document.getElementById('btnCheckin').disabled = !(name.length >= 3 && selectedEncontro);
+  }
+
+  // ── SM Ready ─────────────────────────────────────────
+  window.addEventListener('sm-ready', () => {
+    const ev = window.SM.getActiveEvent();
+    updateEventBadge(ev.id, ev.name);
+  });
+
+  function updateEventBadge(id, name) {
+    const label = document.getElementById('eventLabel');
+    if (id) {
+      label.innerHTML = `<strong>${name}</strong>`;
+    } else {
+      label.innerHTML = `<span class="no-event">Nenhum evento ativo no momento</span>`;
+      document.getElementById('btnCheckin').disabled = true;
+    }
+  }
+
+  // ── Checkin ──────────────────────────────────────────
+  document.getElementById('btnCheckin').addEventListener('click', async () => {
+    const name = document.getElementById('inputName').value.trim();
+    if (!name || !selectedEncontro) return;
+
+    const btn = document.getElementById('btnCheckin');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Confirmando…';
+
+    const res = await window.SM.doCheckin(name, selectedEncontro);
+
+    if (res.ok) {
+      document.getElementById('checkinForm').style.display = 'none';
+      document.getElementById('successName').textContent = name;
+      document.getElementById('successScreen').classList.add('show');
+    } else {
+      showMsg('formMsg', res.msg, 'error');
+      btn.disabled = false;
+      btn.innerHTML = 'Confirmar Presença ✔';
+    }
+  });
+
+  function showMsg(id, text, type) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = `msg show ${type}`;
+    setTimeout(() => el.classList.remove('show'), 5000);
+  }
+
+  // ── Moderador toggle ─────────────────────────────────
+  function toggleMod() {
+    const lc = document.getElementById('modLoginCard');
+    const pp = document.getElementById('modPanel');
+    if (!window._modOpen) {
+      window._modOpen = true;
+      // Mostra login ou painel conforme auth
+      const user = window._smUser;
+      if (user) { pp.classList.add('show'); }
+      else       { lc.classList.add('show'); }
+    } else {
+      window._modOpen = false;
+      lc.classList.remove('show');
+      pp.classList.remove('show');
+    }
+  }
+
+  // ── Auth ─────────────────────────────────────────────
+  window.addEventListener('sm-auth', e => {
+    window._smUser = e.detail.user;
+    if (e.detail.user) {
+      document.getElementById('modLoginCard').classList.remove('show');
+      document.getElementById('modPanel').classList.add('show');
+      loadEvents();
+      loadCheckins();
+    } else {
+      document.getElementById('modPanel').classList.remove('show');
+    }
+  });
+
+  async function doLogin() {
+    const email = document.getElementById('modEmail').value.trim();
+    const pass  = document.getElementById('modPass').value;
+    const btn   = document.getElementById('btnLogin');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Entrando…';
+    const res = await window.SM.login(email, pass);
+    if (!res.ok) {
+      showMsg('loginMsg', res.msg, 'error');
+      btn.disabled = false;
+      btn.innerHTML = 'Entrar';
+    }
+  }
+
+  async function doLogout() {
+    await window.SM.logout();
+    document.getElementById('modPanel').classList.remove('show');
+    window._modOpen = false;
+  }
+
+  // ── Eventos ──────────────────────────────────────────
+  async function loadEvents() {
+    // Carregamos via Firestore diretamente para listar
+    const { getFirestore, collection, getDocs, orderBy, query } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
+    const { getApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
+    const db = getFirestore(getApp());
+    const q  = query(collection(db, "events"), orderBy("createdAt", "desc"));
+    const snap = await getDocs(q);
+    eventsCache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderEvents();
+  }
+
+  function renderEvents() {
+    const list = document.getElementById('eventList');
+    const cur  = window.SM.getActiveEvent();
+    document.getElementById('evCount').textContent = eventsCache.length;
+    if (!eventsCache.length) {
+      list.innerHTML = '<li style="color:#aaa;font-size:.85rem;text-align:center;padding:10px 0">Nenhum evento criado.</li>';
+      return;
+    }
+    list.innerHTML = eventsCache.map(ev => `
+      <li class="event-item ${ev.id === cur.id ? 'active-ev' : ''}">
+        <span>${ev.name} ${ev.id === cur.id ? '🟢' : ''}</span>
+        <button class="btn-sm ${ev.id === cur.id ? 'deactivate' : 'activate'}"
+          onclick="handleActivate('${ev.id}','${ev.name.replace(/'/g,"\\'")}')">
+          ${ev.id === cur.id ? 'Ativo' : 'Ativar'}
+        </button>
+      </li>`).join('');
+  }
+
+  async function handleCreateEvent() {
+    const input = document.getElementById('newEventName');
+    const name  = input.value.trim();
+    if (!name) return showMsg('createMsg', 'Digite o nome do evento.', 'error');
+    await window.SM.createEvent(name);
+    input.value = '';
+    showMsg('createMsg', 'Evento criado! ✅', 'success');
+    await loadEvents();
+  }
+
+  async function handleActivate(id, name) {
+    await window.SM.setActiveEvent(id, name);
+    await window.SM.loadActiveEvent();
+    const ev = window.SM.getActiveEvent();
+    updateEventBadge(ev.id, ev.name);
+    await loadEvents();
+    loadCheckins(id, name);
+    showMsg('createMsg', `"${name}" ativado! 🟢`, 'success');
+  }
+
+  async function handleClearEvent() {
+    await window.SM.clearActiveEvent();
+    await window.SM.loadActiveEvent();
+    updateEventBadge(null, null);
+    renderEvents();
+    document.getElementById('checkinList').innerHTML = '<li style="color:#aaa;font-size:.85rem;text-align:center;padding:10px 0">—</li>';
+    document.getElementById('presentCount').textContent = '0';
+    document.getElementById('presentEventLabel').textContent = 'Nenhum evento selecionado';
+    if (unsubCheckins) { unsubCheckins(); unsubCheckins = null; }
+  }
+
+  // ── Lista de presentes ───────────────────────────────
+  function loadCheckins() {
+    const ev = window.SM.getActiveEvent();
+    if (!ev.id) return;
+    document.getElementById('presentEventLabel').textContent = `Evento: ${ev.name}`;
+    if (unsubCheckins) unsubCheckins();
+    unsubCheckins = window.SM.listenCheckins(ev.id, list => {
+      document.getElementById('presentCount').textContent = list.length;
+      const ul = document.getElementById('checkinList');
+      if (!list.length) {
+        ul.innerHTML = '<li style="color:#aaa;font-size:.85rem;text-align:center;padding:10px 0">Nenhuma presença ainda.</li>';
+        return;
+      }
+      ul.innerHTML = list.map(c => `
+        <li class="checkin-item">
+          <span class="ci-name">${c.name}</span>
+          <span class="ci-enc">${c.encontro}</span>
+        </li>`).join('');
+    });
+  }
+</script>
+</body>
+</html>
